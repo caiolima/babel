@@ -44,37 +44,37 @@ Output is the regenerated code plus `// parse+generate ms: …`. Eager and defer
 |--------------------------------|--------|------------------------------|
 | parser TS plugin               | 108 KB | ✅ NOT evaluated (deferred)  |
 | parser Flow plugin             |  86 KB | ✅ NOT evaluated (deferred)  |
-| generator TS printer           |  15 KB | ❌ still evaluated (leaks)   |
-| generator Flow printer         |  ~     | ❌ still evaluated (leaks)   |
+| generator TS printer           |  15 KB | ✅ NOT evaluated (deferred)  |
+| generator Flow printer         |  ~     | ✅ NOT evaluated (deferred)  |
 
-**Parser side works cleanly** (the dominant ~194 KB win): the 6 plugins register through a
-single map in `parser/lib/plugin-utils.js`; converting the TS/Flow entries to
-`import defer * as ns` + lazy getters means plain-JS parsing never touches them, and the TS
-plugin evaluates lazily only when TS is actually parsed.
+For TypeScript input, `parser-ts` and `gen-ts` evaluate **lazily** (only when TS is actually
+processed); Flow stays unevaluated. Eager vs defer produce identical output throughout.
 
-**Generator side does not defer yet** — a real `import defer` finding: the always-loaded
-class-member printing path (`generator/lib/generators/classes.js`) eagerly imports helpers
-that live *inside* the TS/Flow printer modules:
+**Parser side** (the dominant ~194 KB win): the 6 plugins register through a single map in
+`parser/lib/plugin-utils.js`; converting the TS/Flow entries to `import defer * as ns` + lazy
+getters means plain-JS parsing never touches them, and the TS plugin evaluates lazily only when
+TS is actually parsed.
+
+**Generator side** required a small refactor first — a real `import defer` finding: the
+always-loaded class-member printing path (`generator/lib/generators/classes.js`) eagerly
+imported helpers that lived *inside* the TS/Flow printer modules:
 
 ```js
-// generators/classes.js
+// generators/classes.js (before)
 import { _tsPrintClassMemberModifiers } from "./typescript.js";
 import { _variance } from "./flow.js";
 ```
 
-Because `classes.js` is needed for ordinary JS, that eager import forces `typescript.js` and
+Because `classes.js` is needed for ordinary JS, that eager import forced `typescript.js` and
 `flow.js` to evaluate at startup, defeating the deferral. **Deferral only pays off when the
 subgraph is cleanly separable.**
 
-### To make the generator side defer too (proposed, not yet applied)
-Extract the shared helpers into a small always-loaded module (all are self-contained — they
-only use `Printer` methods):
-
-- `_variance` (flow.js), `_tsPrintClassMemberModifiers` + its helper `printModifiersList`
-  (typescript.js) → new `generators/_class-modifiers.js`.
-- `classes.js` and `flow.js` import them from the shared module instead of from the printer
-  modules. Then `typescript.js`/`flow.js` are reachable *only* through the deferred dispatch
-  and stop evaluating for plain JS.
+### Fix applied: extract the shared helpers
+`build-pipeline.mjs` (defer tree only) extracts the self-contained helpers — `_variance`
+(flow.js) and `_tsPrintClassMemberModifiers` + its helper `printModifiersList` (typescript.js)
+— into a new always-loaded module `generators/_class-modifiers.js`. `classes.js` and `flow.js`
+now import them from there, so `typescript.js`/`flow.js` are reachable *only* through the
+deferred dispatch and no longer evaluate for plain JS (verified with the markers above).
 
 ## How the defer transform is applied (`build-pipeline.mjs`)
 - **Parser (`plugin-utils.js`)**: TS/Flow `import` → `import defer * as _ns`; `mixinPlugins`

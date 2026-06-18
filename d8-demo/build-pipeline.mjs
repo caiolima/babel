@@ -296,6 +296,66 @@ for (const key of allKeys) {
 export { generatorInfosMap };
 `
   );
+
+  // 3. extract the shared class-modifier helpers out of typescript.js/flow.js so
+  //    the always-loaded class printing path (classes.js) no longer eagerly
+  //    imports those modules — otherwise the deferral above is defeated. All
+  //    three helpers are self-contained (only Printer methods).
+  const tsFile = path.join(genDir, "generators/typescript.js");
+  const flowFile = path.join(genDir, "generators/flow.js");
+  const classesFile = path.join(genDir, "generators/classes.js");
+  const sharedFile = path.join(genDir, "generators/_class-modifiers.js");
+
+  let tsSrc = readFileSync(tsFile, "utf8");
+  let flowSrc = readFileSync(flowFile, "utf8");
+  let classesSrc = readFileSync(classesFile, "utf8");
+
+  const tsModifiers = cutFunction(tsSrc, "export function _tsPrintClassMemberModifiers(");
+  tsSrc = tsModifiers.rest;
+  const printList = cutFunction(tsSrc, "function printModifiersList(");
+  tsSrc = printList.rest;
+  const variance = cutFunction(flowSrc, "export function _variance(");
+  flowSrc = variance.rest;
+
+  writeFileSync(
+    sharedFile,
+    `// Shared class-modifier helpers extracted from typescript.js / flow.js so
+// those printer modules can be deferred. Used by the always-loaded class
+// printing path (classes.js) and by flow.js. Self-contained (Printer methods).
+${tsModifiers.body}
+${printList.body}
+${variance.body}`
+  );
+
+  // flow.js still uses _variance internally -> import it from the shared module
+  flowSrc = `import { _variance } from "./_class-modifiers.js";\n` + flowSrc;
+  writeFileSync(flowFile, flowSrc);
+  writeFileSync(tsFile, tsSrc);
+
+  // classes.js: pull both helpers from the shared module instead of from the
+  // (now deferred) printer modules
+  classesSrc = classesSrc.replace(
+    'import { _tsPrintClassMemberModifiers } from "./typescript.js";',
+    'import { _tsPrintClassMemberModifiers, _variance } from "./_class-modifiers.js";'
+  );
+  classesSrc = classesSrc.replace(
+    'import { _variance } from "./flow.js";\n',
+    ""
+  );
+  writeFileSync(classesFile, classesSrc);
+}
+
+// cut a top-level function (header .. closing brace at column 0) out of src;
+// returns { body, rest }. Relies on prettier's column-0 closing brace.
+function cutFunction(src, header) {
+  const start = src.indexOf(header);
+  if (start === -1) throw new Error("cutFunction: header not found: " + header);
+  const close = src.indexOf("\n}\n", start);
+  if (close === -1) throw new Error("cutFunction: close not found: " + header);
+  const end = close + 3; // include the "\n}\n"
+  const body = src.slice(start, end);
+  const rest = src.slice(0, start) + src.slice(end);
+  return { body, rest };
 }
 
 // ---------------------------------------------------------------------------

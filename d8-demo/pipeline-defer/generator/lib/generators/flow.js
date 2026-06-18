@@ -1,3 +1,4 @@
+import { _variance } from "./_class-modifiers.js";
 import * as _t from "../../../types/lib/index.js";
 const {
   isDeclareExportDeclaration,
@@ -301,16 +302,6 @@ export function _interfaceish(node) {
   }
   this.space();
   this.print(node.body);
-}
-export function _variance(node) {
-  const kind = node.variance?.kind;
-  if (kind != null) {
-    if (kind === "plus") {
-      this.tokenChar(43);
-    } else if (kind === "minus") {
-      this.tokenChar(45);
-    }
-  }
 }
 export function InterfaceDeclaration(node) {
   this.word("interface");

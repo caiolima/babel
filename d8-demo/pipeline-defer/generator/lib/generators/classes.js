@@ -4,8 +4,7 @@ const {
   isExportNamedDeclaration
 } = _t;
 import { _shouldPrintDecoratorsBeforeExport } from "./expressions.js";
-import { _tsPrintClassMemberModifiers } from "./typescript.js";
-import { _variance } from "./flow.js";
+import { _tsPrintClassMemberModifiers, _variance } from "./_class-modifiers.js";
 import { _methodHead } from "./methods.js";
 export function ClassDeclaration(node, parent) {
   const inExport = isExportDefaultDeclaration(parent) || isExportNamedDeclaration(parent);

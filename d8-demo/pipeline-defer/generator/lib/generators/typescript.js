@@ -599,41 +599,12 @@ function tsPrintSignatureDeclarationBase(node) {
   _parameters.call(this, parameters, 41);
   this.print(node.returnType);
 }
-export function _tsPrintClassMemberModifiers(node) {
-  const isPrivateField = node.type === "ClassPrivateProperty";
-  const isPublicField = node.type === "ClassAccessorProperty" || node.type === "ClassProperty";
-  printModifiersList(this, node, [isPublicField && node.declare && "declare", !isPrivateField && node.accessibility]);
-  if (node.static) {
-    this.word("static");
-    this.space();
-  }
-  printModifiersList(this, node, [!isPrivateField && node.abstract && "abstract", !isPrivateField && node.override && "override", (isPublicField || isPrivateField) && node.readonly && "readonly"]);
-}
 function printBraced(printer, node, cb) {
   printer.token("{");
   const oldNoLineTerminatorAfterNode = printer.enterDelimited();
   cb();
   printer._noLineTerminatorAfterNode = oldNoLineTerminatorAfterNode;
   printer.rightBrace(node);
-}
-function printModifiersList(printer, node, modifiers) {
-  const modifiersSet = new Set();
-  for (const modifier of modifiers) {
-    if (modifier) modifiersSet.add(modifier);
-  }
-  printer.tokenMap?.find(node, tok => {
-    if (modifiersSet.has(tok.value)) {
-      printer.token(tok.value);
-      printer.space();
-      modifiersSet.delete(tok.value);
-      return modifiersSet.size === 0;
-    }
-    return false;
-  });
-  for (const modifier of modifiersSet) {
-    printer.word(modifier);
-    printer.space();
-  }
 }
 
 //# sourceMappingURL=typescript.js.map
