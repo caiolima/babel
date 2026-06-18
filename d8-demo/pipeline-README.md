@@ -35,8 +35,9 @@ $D8 --js-staging --module pipeline-defer/run.js  -- "const x = a ?? b;"
 $D8 --js-staging --module pipeline-defer/run.js  -- "const x: number = 1;" ts
 ```
 
-Output is the regenerated code plus `// parse+generate ms: …`. Eager and defer produce
-**identical** output for both plain JS and TypeScript.
+Output is the regenerated code plus a steady-state `// parse+generate (cold…) ms` line. Eager
+and defer produce **identical** output for both plain JS and TypeScript. (That `ms` line is NOT
+the import-defer metric — see **Measuring** below.)
 
 ## What defers, and what doesn't (verified with `print("EVAL …")` markers)
 
@@ -86,3 +87,46 @@ deferred dispatch and no longer evaluate for plain JS (verified with the markers
   `nodeId === 72`), with TS/Flow entries wrapped in lazy thunks. Printer key names are read via
   dynamic import of the original modules (catches alias exports like
   `TSTypeParameterInstantiation as TSTypeParameterDeclaration`).
+
+## Measuring
+
+```sh
+sh d8-demo/measure.sh              # full benchmark (env: D8, K, N, JS, TS)
+```
+
+Two layers, because they answer different questions:
+
+- **`run.js` timings are steady-state** — they run *after* the module graph is already loaded
+  and evaluated, so they do **not** reflect deferral. Bench mode (`-- "<code>" js|ts <iters>`)
+  loops `<iters>` times and reports `warm` ms/op; averaging is what gives sub-microsecond
+  resolution (d8's `performance.now()` is quantized, so a single op reads as a coarse step).
+- **`measure.sh` section A is process-level startup** — full d8 wall-clock including module
+  *evaluation*. This is the only place the import-defer effect can appear.
+
+### Result: deferral works, but the startup win here is negligible
+
+Verified numbers (V8 15.1.0, Apple silicon; your mileage will vary):
+
+| | startup (avg of 200) |
+|---|---|
+| eager, plain JS | ~41.4 ms |
+| defer, plain JS | ~41.0 ms |
+
+The defer tree provably never evaluates the TS/Flow modules on plain JS (the `EVAL`-marker
+test), yet startup barely moves. Direct measurement of the *pure* deferred evaluation explains
+why:
+
+```
+pure deferred-eval (TS+Flow parser plugins) ≈ 0.2 ms
+```
+
+**`import defer` defers top-level evaluation only.** Babel's parser/printer modules do almost
+nothing at top level (they just define functions), so the evaluation it skips costs ~0.2 ms.
+The dominant ~40 ms is V8 init plus *fetching, parsing and compiling* all 150 module files —
+and that happens for deferred modules too (a statically `import defer`-ed module is still
+loaded and parsed; only its body execution is postponed).
+
+**Takeaway:** `import defer` pays off for modules with expensive top-level *initialization*
+(building large tables, precomputing data, running setup) — not for modules that merely define
+functions. To make this pipeline a showcase, defer a module that does real work at import time,
+or measure parse/compile (not just evaluation), which `import defer` does not address.
