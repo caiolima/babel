@@ -16,9 +16,16 @@ import type {
 import type {
   InvalidOriginalMapping,
   OriginalMapping,
+  OriginalMappingPiece,
   SourceMapInput,
 } from "@jridgewell/trace-mapping";
-import { originalPositionFor, TraceMap } from "@jridgewell/trace-mapping";
+import {
+  originalMappingsFor,
+  originalPositionFor,
+  TraceMap,
+} from "@jridgewell/trace-mapping";
+
+type MappingInput = Parameters<typeof maybeAddMapping>[1];
 
 /**
  * Build a sourcemap.
@@ -42,9 +49,9 @@ export default class SourceMap {
   //   position as the last buffered one. It is dropped if the next mapping
   //   extends the range, as the range then covers it, and it is buffered
   //   normally otherwise.
-  #mappingsBuffer0: Parameters<typeof maybeAddMapping>[1] | null = null;
-  #mappingsBuffer1: Parameters<typeof maybeAddMapping>[1] | null = null;
-  #mappingsBuffer2: Parameters<typeof maybeAddMapping>[1] | null = null;
+  #mappingsBuffer0: MappingInput | null = null;
+  #mappingsBuffer1: MappingInput | null = null;
+  #mappingsBuffer2: MappingInput | null = null;
   #droppedMappingForRange = false;
 
   #allowRangeMappings: boolean;
@@ -65,15 +72,6 @@ export default class SourceMap {
     this.#allowRangeMappings = opts.sourceMapRanges ?? false;
 
     if (opts.inputSourceMap) {
-      if (this.#allowRangeMappings) {
-        this.#allowRangeMappings = false;
-        console.warn(
-          "[BABEL] Note: The code generator has disabled source map ranges " +
-            `for ${opts.filename ?? "the generated code"}, because they ` +
-            "cannot be used together with `inputSourceMap` yet.",
-        );
-      }
-
       this._inputMap = new TraceMap(opts.inputSourceMap);
       const resolvedSources = this._inputMap.resolvedSources;
       if (resolvedSources.length) {
@@ -195,7 +193,7 @@ export default class SourceMap {
       source: originalMapping?.source,
       original: originalMapping,
       isRange: false,
-    } as Parameters<typeof maybeAddMapping>[1];
+    } as MappingInput;
 
     // Named mappings never participate in range collapsing: a range erases
     // per-segment names, so a name has to land on a real, standalone segment.
@@ -204,6 +202,14 @@ export default class SourceMap {
       this.#flushBuffer();
       maybeAddMapping(this._map, newMapping);
       return;
+    }
+
+    // With an input source map, ranges are found in the code we were given,
+    // so buffer the position in it: it is traced through the input map when
+    // the mapping is committed (see #addMapping).
+    if (this.#composeRanges && line != null) {
+      newMapping.source = this._sourceFileName!;
+      newMapping.original = { line, column: column! };
     }
 
     if (this.#allowRangeMappings) {
@@ -243,7 +249,7 @@ export default class SourceMap {
     this.#bufferMapping(newMapping);
   }
 
-  #bufferMapping(newMapping: Parameters<typeof maybeAddMapping>[1]) {
+  #bufferMapping(newMapping: MappingInput) {
     // We keep up to two mappings buffered before committing them to the
     // underlying map. This lets us detect consecutive range candidate mappings and
     // collapse them into a single range mapping: buffer0 is the candidate
@@ -258,7 +264,7 @@ export default class SourceMap {
       if (this.#isRangeCandidate(this.#mappingsBuffer0, newMapping)) {
         this.#mappingsBuffer1 = newMapping;
       } else {
-        maybeAddMapping(this._map, this.#mappingsBuffer0);
+        this.#addMapping(this.#mappingsBuffer0);
         this.#mappingsBuffer0 = newMapping;
       }
       return;
@@ -274,8 +280,8 @@ export default class SourceMap {
       // committed segment is the implicit range close. Only mark the mapping
       // as range if it actually allowed us to drop other mappings.
       if (this.#droppedMappingForRange) this.#mappingsBuffer0.isRange = true;
-      maybeAddMapping(this._map, this.#mappingsBuffer0);
-      maybeAddMapping(this._map, this.#mappingsBuffer1);
+      this.#addMapping(this.#mappingsBuffer0, this.#mappingsBuffer1);
+      this.#addMapping(this.#mappingsBuffer1);
       this.#mappingsBuffer0 = newMapping;
       this.#mappingsBuffer1 = null;
       this.#droppedMappingForRange = false;
@@ -292,19 +298,81 @@ export default class SourceMap {
     const buf1 = this.#mappingsBuffer1;
     if (buf0 !== null) {
       if (buf1 !== null && this.#droppedMappingForRange) buf0.isRange = true;
-      maybeAddMapping(this._map, buf0 as any);
+      this.#addMapping(buf0, buf1);
       this.#mappingsBuffer0 = null;
     }
     if (buf1 !== null) {
-      maybeAddMapping(this._map, buf1);
+      this.#addMapping(buf1);
       this.#mappingsBuffer1 = null;
     }
   }
 
-  #isRangeCandidate(
-    prev: Parameters<typeof maybeAddMapping>[1],
-    next: Parameters<typeof maybeAddMapping>[1],
-  ): boolean {
+  get #composeRanges() {
+    return this._inputMap !== null && this.#allowRangeMappings;
+  }
+
+  /**
+   * Commits a buffered mapping. With an input source map, its position is in
+   * the code we were given, so trace it through the input map first: a point
+   * like the lookup in `mark`, and a range (which ends at `end`, the next
+   * mapping) into every mapping of the input map it covers.
+   */
+  #addMapping(mapping: MappingInput, end?: MappingInput | null) {
+    if (!this.#composeRanges || !mapping.original) {
+      maybeAddMapping(this._map, mapping);
+      return;
+    }
+
+    const { generated, original } = mapping;
+    if (!mapping.isRange) {
+      const traced = originalPositionFor(this._inputMap!, original);
+      maybeAddMapping(this._map, {
+        name: null,
+        generated,
+        source: traced.source,
+        original: traced,
+      } as MappingInput);
+      return;
+    }
+
+    // Positions are 0-based for originalMappingsFor, and gen-mapping's are 1-based.
+    const genStart = { line: generated.line - 1, column: generated.column };
+    const pieces = originalMappingsFor(this._inputMap!, {
+      start: { line: original.line - 1, column: original.column },
+      end: { line: end!.original.line - 1, column: end!.original.column },
+      generated: { start: genStart },
+    });
+
+    // Nothing covers the range's start, so end whatever mapping came before it.
+    const first = pieces[0];
+    const firstStart = first && pieceStart(first);
+    if (
+      !firstStart ||
+      firstStart.line !== genStart.line ||
+      firstStart.column !== genStart.column
+    ) {
+      maybeAddMapping(this._map, { generated } as MappingInput);
+    }
+
+    for (const piece of pieces) {
+      const start = pieceStart(piece);
+      const at = { line: start.line + 1, column: start.column };
+      if (piece.sourcesIndex === null) {
+        maybeAddMapping(this._map, { generated: at } as MappingInput);
+      } else {
+        const from = piece.type === "point" ? piece : piece.start;
+        maybeAddMapping(this._map, {
+          name: null,
+          generated: at,
+          source: piece.source,
+          original: { line: from.line + 1, column: from.column },
+          isRange: piece.type === "range",
+        } as MappingInput);
+      }
+    }
+  }
+
+  #isRangeCandidate(prev: MappingInput, next: MappingInput): boolean {
     if (!this.#allowRangeMappings) return false;
 
     const prevOriginal = prev.original;
@@ -331,4 +399,8 @@ export default class SourceMap {
       generatedColumnDelta === originalColumnDelta
     );
   }
+}
+
+function pieceStart(piece: OriginalMappingPiece) {
+  return piece.type === "point" ? piece.generated : piece.generated.start;
 }

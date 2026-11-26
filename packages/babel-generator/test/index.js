@@ -894,38 +894,54 @@ describe("generation", function () {
     `);
   });
 
-  it("disables source map ranges when an inputSourceMap is provided", () => {
+  it("composes source map ranges with an inputSourceMap", () => {
     const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
       const code = "var t = x => x * x;";
-      const opts = {
-        sourceMaps: true,
-        filename: "input.js",
-        inputSourceMap: {
-          version: 3,
-          names: ["t", "x"],
-          sources: ["source-maps/arrow-function/input.js"],
-          mappings:
-            "AAAA,IAAIA,CAAC,GAAG,SAAJA,CAACA,CAAGC,CAAC;EAAA,OAAIA,CAAC,GAAGA,CAAC;AAAA",
-        },
+      const inputSourceMap = {
+        version: 3,
+        names: ["t", "x"],
+        sources: ["source-maps/arrow-function/input.js"],
+        mappings:
+          "AAAA,IAAIA,CAAC,GAAG,SAAJA,CAACA,CAAGC,CAAC;EAAA,OAAIA,CAAC,GAAGA,CAAC;AAAA",
       };
+      const opts = { sourceMaps: true, sourceMapRanges: true };
 
-      const withRanges = generate(parse(code), {
+      const result = generate(parse(code), {
         ...opts,
-        sourceMapRanges: true,
-      }).map;
-      const withoutRanges = generate(parse(code), opts).map;
+        filename: "input.js",
+        inputSourceMap,
+      });
+      expect(warn).not.toHaveBeenCalled();
 
-      expect(withRanges.rangeMappings).toBeUndefined();
-      expect(withRanges).toEqual(withoutRanges);
-
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          "The code generator has disabled source map ranges for input.js",
-        ),
-      );
+      // Every position resolves like going through the generator's own map,
+      // then through the input map.
+      const alone = generate(parse(code), {
+        ...opts,
+        sourceFileName: "input.js",
+      });
+      expect(alone.map.rangeMappings).toBeTruthy();
+      const composed = new TraceMap(result.map);
+      const outer = new TraceMap(alone.map);
+      const inner = new TraceMap(inputSourceMap);
+      const position = ({ source, line, column }) => ({ source, line, column });
+      result.code.split("\n").forEach((text, i) => {
+        for (let column = 0; column <= text.length; column++) {
+          const needle = { line: i + 1, column };
+          const mid = originalPositionFor(outer, needle);
+          const expected =
+            mid.line === null
+              ? mid
+              : originalPositionFor(inner, {
+                  line: mid.line,
+                  column: mid.column,
+                });
+          expect(position(originalPositionFor(composed, needle))).toEqual(
+            position(expected),
+          );
+        }
+      });
     } finally {
       warn.mockRestore();
     }
